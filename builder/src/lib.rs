@@ -14,27 +14,73 @@ pub fn builder(input: TokenStream) -> TokenStream {
     } else{
         unimplemented!()
     };
+    fn ty_is_option(ty : &syn::Type) -> Option<&syn::Type> {
+        if let syn::Type::Path(ref p) = ty {
+            if p.path.segments.len() != 1 || p.path.segments[0].ident != "Option" {
+                return None;
+            }
+
+            if let syn::PathArguments::AngleBracketed(ref inner_ty) = p.path.segments[0].arguments{
+                if inner_ty.args.len() != 1{
+                    return None;
+                }
+                let inner_ty = inner_ty.args.first().unwrap();
+                if let syn::GenericArgument::Type(ref t) = inner_ty {
+                    return Some(t);
+                }
+            }
+        }
+        None
+    }
+
     let optimized = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        quote!{#name: std::option::Option<#ty>}
+        if ty_is_option(ty).is_some(){
+            quote!{#name: #ty}
+        } else{
+            quote!{#name: std::option::Option<#ty>}
+        }
+
     });
     let methods = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        quote!{
-            pub fn #name(&mut self, #name: #ty) -> &mut Self {
-               self.#name = Some(#name);
-               self
+        if let Some(inner_ty) = ty_is_option(ty) {
+            quote!{
+                pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
+                self.#name = Some(#name);
+                self
+                }
+            }
+        } else {
+            quote!{
+                pub fn #name(&mut self, #name: #ty) -> &mut Self {
+                self.#name = Some(#name);
+                self
+                }
             }
         }
-    });
 
+    });
     let build_fields = fields.iter().map(|f|{
         let name = &f.ident;
         let ty = &f.ty;
+        if ty_is_option(ty).is_some(){
+            quote!{
+                #name: self.#name.clone()
+            }
+        } else{
+            quote!{
+                #name: self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
+            }
+        }
+
+    });
+    let build_none = fields.iter().map(|f|{
+        let name = &f.ident;
         quote!{
-            #name: self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))
+            #name: None,
         }
     });
     let bname = format!("{}Builder", name);
@@ -46,10 +92,10 @@ pub fn builder(input: TokenStream) -> TokenStream {
         impl #bident {
             #(#methods)*
 
-            pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+            pub fn build(&self) -> Result<#name, Box<dyn std::error::Error>> {
                 Ok(
                    #name {
-                        #(#build_fields?,)*
+                        #(#build_fields,)*
                     }
                 )
 
@@ -58,10 +104,7 @@ pub fn builder(input: TokenStream) -> TokenStream {
         impl #name {
             pub fn builder() -> #bident {
                 #bident{
-                    executable: None,
-                    args: None,
-                    env: None,
-                    current_dir: None,
+                    #(#build_none)*
                 }
             }
         }
